@@ -128,33 +128,68 @@ function InteractivePrototype() {
       }
       `;
 
-      const contents: any[] = [prompt];
+      const parts: any[] = [{ text: prompt }];
 
       if (productDetails.image) {
-        const base64Data = await new Promise<string>((resolve, reject) => {
+        const { base64, mimeType } = await new Promise<{base64: string, mimeType: string}>((resolve, reject) => {
           const reader = new FileReader();
-          reader.onload = () => resolve((reader.result as string).split(',')[1]);
-          reader.onerror = reject;
+          reader.onload = (e) => {
+            const img = new Image();
+            img.onload = () => {
+              const canvas = document.createElement('canvas');
+              let width = img.width;
+              let height = img.height;
+              const MAX_DIM = 1024;
+              
+              if (width > MAX_DIM || height > MAX_DIM) {
+                if (width > height) {
+                  height = Math.round((height * MAX_DIM) / width);
+                  width = MAX_DIM;
+                } else {
+                  width = Math.round((width * MAX_DIM) / height);
+                  height = MAX_DIM;
+                }
+              }
+              
+              canvas.width = width;
+              canvas.height = height;
+              const ctx = canvas.getContext('2d');
+              if (!ctx) return reject(new Error('Canvas context failed'));
+              ctx.drawImage(img, 0, 0, width, height);
+              const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+              resolve({
+                base64: dataUrl.split(',')[1],
+                mimeType: 'image/jpeg'
+              });
+            };
+            img.onerror = () => reject(new Error('Image processing failed'));
+            img.src = e.target?.result as string;
+          };
+          reader.onerror = () => reject(new Error('File reading failed'));
           reader.readAsDataURL(productDetails.image!);
         });
-        contents.unshift({
+        
+        parts.unshift({
           inlineData: {
-            data: base64Data,
-            mimeType: productDetails.image.type
+            data: base64,
+            mimeType: mimeType
           }
         });
       }
 
       const response = await ai.models.generateContent({
         model: 'gemini-3.1-pro-preview',
-        contents: contents,
+        contents: parts,
         config: {
             responseMimeType: "application/json"
         }
       });
 
       if (response.text) {
-         setResult(JSON.parse(response.text));
+         let rawText = response.text.trim();
+         // Just in case the model returns markdown code blocks wrapping the json explicitly despite mimeType config
+         rawText = rawText.replace(/^```[a-z]*\n/i, '').replace(/\n```$/i, '').trim();
+         setResult(JSON.parse(rawText));
       } else {
          throw new Error("Empty response from AI");
       }
